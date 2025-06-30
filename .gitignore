@@ -6,6 +6,7 @@
 # Hackathon specific files
 hackdescription.md
 hackinstructions.md
+frontend-ui-prompt.md
 
 # Python
 __pycache__/
