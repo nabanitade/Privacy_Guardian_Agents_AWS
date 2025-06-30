@@ -1,0 +1,12 @@
+version = 0.1
+[default]
+[default.deploy]
+[default.deploy.parameters]
+stack_name = "privacy-guardian-agents"
+s3_bucket = "aws-sam-cli-managed-default-samclisourcebucket-611113686056"
+region = "us-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "Environment=\"development\" BedrockModel=\"anthropic.claude-3-5-sonnet-20241022-v1:0\" MaxTokens=\"2000\" Temperature=\"0.1\" BridgeFunctionName=\"rule-engine-bridge-development\""
+image_repositories = []
+s3_prefix = "privacy-guardian-agents"

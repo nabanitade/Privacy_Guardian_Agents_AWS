@@ -1,0 +1,46 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Rule Engine Bridge Lambda for Privacy Guardian Agents
+
+Parameters:
+  Environment:
+    Type: String
+    Default: development
+    AllowedValues: [development, staging, production]
+    Description: Environment name
+
+Resources:
+  RuleEngineBridgeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'rule-engine-bridge-${Environment}'
+      CodeUri: .
+      Handler: rule_engine_bridge.handler
+      Runtime: nodejs18.x
+      Description: Node.js bridge to execute TypeScript RuleEngine for Python agents
+      MemorySize: 2048
+      Timeout: 300
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          NODE_ENV: production
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: '*'
+
+Outputs:
+  RuleEngineBridgeFunctionName:
+    Description: Name of the Rule Engine Bridge Lambda
+    Value: !Ref RuleEngineBridgeFunction
+    Export:
+      Name: !Sub '${AWS::StackName}-RuleEngineBridgeFunctionName'
+  RuleEngineBridgeFunctionArn:
+    Description: ARN of the Rule Engine Bridge Lambda
+    Value: !GetAtt RuleEngineBridgeFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-RuleEngineBridgeFunctionArn' 

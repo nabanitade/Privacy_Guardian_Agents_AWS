@@ -1,0 +1,253 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Privacy Guardian Agents - Multi-Agent Privacy Enforcement System
+
+Parameters:
+  Environment:
+    Type: String
+    Default: development
+    AllowedValues: [development, staging, production]
+    Description: Environment name
+  
+  BedrockModel:
+    Type: String
+    Default: anthropic.claude-3-5-sonnet-20241022-v1:0
+    Description: AWS Bedrock model to use for AI analysis
+  
+  MaxTokens:
+    Type: Number
+    Default: 2000
+    Description: Maximum tokens for Bedrock API calls
+  
+  Temperature:
+    Type: Number
+    Default: 0.1
+    Description: Temperature for Bedrock API calls
+
+  BridgeFunctionName:
+    Type: String
+    Default: rule-engine-bridge-development
+    Description: Name of the Rule Engine Bridge Lambda function (deployed separately)
+
+Globals:
+  Function:
+    Timeout: 900
+    MemorySize: 1024
+    Runtime: python3.9
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        BEDROCK_MODEL: !Ref BedrockModel
+        BEDROCK_MAX_TOKENS: !Ref MaxTokens
+        BEDROCK_TEMPERATURE: !Ref Temperature
+        S3_BUCKET_NAME: !Ref PrivacyGuardianReportsBucket
+        DYNAMODB_TABLE: !Ref PrivacyScanResultsTable
+        CLOUDWATCH_NAMESPACE: PrivacyGuardian
+
+Resources:
+  # S3 Bucket for Reports
+  PrivacyGuardianReportsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'privacy-guardian-reports-${AWS::AccountId}-${Environment}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldReports
+            Status: Enabled
+            ExpirationInDays: 365
+
+  # DynamoDB Table for Scan Results
+  PrivacyScanResultsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'privacy-scan-results-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: scan_id
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+        - AttributeName: violation_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: scan_id
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: ViolationIdIndex
+          KeySchema:
+            - AttributeName: violation_id
+              KeyType: HASH
+            - AttributeName: timestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  # EventBridge Bus for Agent Communication
+  PrivacyGuardianEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub 'privacy-guardian-events-${Environment}'
+
+  # Orchestrator Lambda Function
+  AgentOrchestratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'agent-orchestrator-${Environment}'
+      CodeUri: lambda_functions/
+      Handler: agent_orchestrator.lambda_handler
+      Runtime: python3.9
+      Description: Orchestrates all privacy agents in sequence
+      MemorySize: 2048
+      Timeout: 900
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          BRIDGE_FUNCTION_NAME: !Ref BridgeFunctionName
+          BEDROCK_MODEL: !Ref BedrockModel
+          BEDROCK_MAX_TOKENS: !Ref MaxTokens
+          BEDROCK_TEMPERATURE: !Ref Temperature
+          S3_BUCKET_NAME: !Ref PrivacyGuardianReportsBucket
+          DYNAMODB_TABLE: !Ref PrivacyScanResultsTable
+          CLOUDWATCH_NAMESPACE: PrivacyGuardian
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource: !Sub 'arn:aws:s3:::${PrivacyGuardianReportsBucket}/*'
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:Query
+                - dynamodb:Scan
+              Resource: !GetAtt PrivacyScanResultsTable.Arn
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/*'
+            - Effect: Allow
+              Action:
+                - events:PutEvents
+              Resource: !GetAtt PrivacyGuardianEventBus.Arn
+
+  # CloudWatch Dashboard
+  PrivacyGuardianDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub 'PrivacyGuardian-${Environment}'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["PrivacyGuardian", "ViolationsDetected", "AgentId", "agent_orchestrator"],
+                  ["PrivacyGuardian", "ViolationsEnhanced", "AgentId", "agent_orchestrator"],
+                  ["PrivacyGuardian", "ViolationsAnalyzed", "AgentId", "agent_orchestrator"],
+                  ["PrivacyGuardian", "FixSuggestionsGenerated", "AgentId", "agent_orchestrator"],
+                  ["PrivacyGuardian", "ReportsGenerated", "AgentId", "agent_orchestrator"]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Privacy Guardian Agents Metrics",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["PrivacyGuardian", "ScanSuccess", "AgentId", "agent_orchestrator"],
+                  ["PrivacyGuardian", "AIEnhancementSuccess", "AgentId", "agent_orchestrator"],
+                  ["PrivacyGuardian", "ComplianceAnalysisSuccess", "AgentId", "agent_orchestrator"],
+                  ["PrivacyGuardian", "FixGenerationSuccess", "AgentId", "agent_orchestrator"],
+                  ["PrivacyGuardian", "ReportGenerationSuccess", "AgentId", "agent_orchestrator"]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Agent Success Rates",
+                "period": 300
+              }
+            }
+          ]
+        }
+
+  # CloudWatch Alarms
+  HighViolationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'HighViolations-${Environment}'
+      AlarmDescription: Alert when high number of privacy violations detected
+      MetricName: ViolationsDetected
+      Namespace: PrivacyGuardian
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  # SNS Topic for Notifications
+  PrivacyGuardianSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'privacy-guardian-notifications-${Environment}'
+      DisplayName: Privacy Guardian Agents Notifications
+
+Outputs:
+  S3BucketName:
+    Description: S3 bucket for reports
+    Value: !Ref PrivacyGuardianReportsBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-S3Bucket'
+
+  DynamoDBTableName:
+    Description: DynamoDB table for scan results
+    Value: !Ref PrivacyScanResultsTable
+    Export:
+      Name: !Sub '${AWS::StackName}-DynamoDBTable'
+
+  EventBusName:
+    Description: EventBridge bus name
+    Value: !Ref PrivacyGuardianEventBus
+    Export:
+      Name: !Sub '${AWS::StackName}-EventBus'
+
+  CloudWatchDashboard:
+    Description: CloudWatch dashboard URL
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${PrivacyGuardianDashboard}'
+    Export:
+      Name: !Sub '${AWS::StackName}-Dashboard' 
